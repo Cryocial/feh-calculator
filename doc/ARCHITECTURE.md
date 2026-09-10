@@ -664,6 +664,8 @@ At startup, three JSON files are parsed to build the in-memory databases.
 
 **Conditions**: conditions are not compiled when `Skill` and `Status` objects are loaded. They are compiled into `AtomicCondition` objects (with `timing` and `func`) when `Effect` instances are created at the start of each simulation. At that point, `CONDITION_REGISTRY` provides both the timing and the function to produce `func`.
 
+**Validation**: `build_effect` checks each raw effect dict as it is compiled. The `effect` name must be an `EffectType` with an `EFFECT_LIST_MAP` entry, `target` must be `"self"` or `"foe"`, the keys listed for that type in `REQUIRED_PARAMS` (`effects.py`) must be present, and any `strike` / `formula` value must appear in `STRIKE_VALUES` / `FORMULA_NAMES` (`constants.py`) — except where `EXTRA_STRIKE_VALUES` (`effects.py`) allows an effect to overload `strike` as a mode flag, currently only `MIRACLE`'s `on_unit_special`. A malformed entry raises a `ValueError` naming the effect rather than silently doing nothing. `tests/test_data_integrity.py` runs the same checks over every entry of every JSON file, so a broken skill fails CI before it is ever equipped.
+
 ---
 
 ## User Flow
@@ -899,7 +901,6 @@ Formula names resolve to raw game quantities; skill-specific offsets and caps li
 |---|---|---|
 | `""` (empty) | `0` — only the `flat` component applies | — |
 | `bonus_count` | Unit's active bonus count | — |
-| `penalty_count` | Unit's active penalty count | — |
 | `all_bonus_penalty_both` | Sum of bonus + penalty counts on **both** unit and foe (Empathy) | — |
 | `spaces_moved` | Spaces the unit moved before combat (Incited / Truly Incited) | — |
 | `sum_visible_buffs` | Sum of unit's visible stat bonuses, each floored at 0 (Treachery) | — |
@@ -913,6 +914,7 @@ Formula names resolve to raw game quantities; skill-specific offsets and caps li
 | `unit_cbt_def` | Unit's in-combat Def | — |
 | `unit_cbt_res` | Unit's in-combat Res | — |
 | `max_cooldown` | Unit's max Special cooldown count value | — |
+| `num_bonus_and_penalties_on_unit` | Sum of the unit's own bonus and penalty counts | — |
 
 ---
 
