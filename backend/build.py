@@ -152,7 +152,6 @@ class Unit:
             self._distribute_sequential_stats(applied_engage_stats)
 
         self.current_hp = self.base_stats.hp
-        self.start_of_combat_hp = self.base_stats.hp
 
     def _distribute_sequential_stats(self, total_points: int):
         """
@@ -218,11 +217,6 @@ class Unit:
                     d[k] += 1
 
             for i in range(self.merges * 2):
-                d[priority[i % 5]] += 1
-
-        if self.dragonflower > 0:
-            priority = sorted(d.keys(), key=lambda k: (-d[k], priority_map[k]))
-            for i in range(self.dragonflower):
                 d[priority[i % 5]] += 1
 
         self.base_stats = StatBlock(**d)

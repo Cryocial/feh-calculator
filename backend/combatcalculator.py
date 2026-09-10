@@ -21,6 +21,7 @@ class CombatantState:
     phantom_bonus: StatBlock = field(default_factory=StatBlock)
     defensive_stat: Literal["defense", "res"] | None = None
     cd_start_of_cbt: int = 0
+    start_of_combat_hp: int = 0
     damage_mitigated_bucket: int = 0
     bonus_count: int = 0
     penalty_count: int = 0
@@ -49,7 +50,9 @@ class CombatantState:
     effects_on_strike: list[Effect] = field(default_factory=list)
     effects_after_combat: list[Effect] = field(default_factory=list)
 
-    def visible_stat(self, name: str) -> int:
+    def visible_stat(
+        self, name: str, ignore_buffs: bool = False, ignore_debuffs: bool = False
+    ) -> int:
         """Visible stat INCLUDING per-combat start-of-turn grants.
 
         Start-of-turn grants (Hone, Ploy, etc.) are stored per-combat on this
@@ -57,9 +60,13 @@ class CombatantState:
         stats during/after start-of-turn must go through here, not
         unit.get_visible_stat directly, or it won't see the grants.
         """
-        base = self.unit.get_visible_stat(name)
-        base += getattr(self.granted_visible_buffs, name)
-        base -= getattr(self.granted_visible_debuffs, name)
+        base = self.unit.get_visible_stat(
+            name, ignore_buffs=ignore_buffs, ignore_debuffs=ignore_debuffs
+        )
+        if not ignore_buffs:
+            base += getattr(self.granted_visible_buffs, name)
+        if not ignore_debuffs:
+            base -= getattr(self.granted_visible_debuffs, name)
         return base
 
     def cbt_stat_with_phantom(self, name: str) -> int:
@@ -243,6 +250,9 @@ class CombatEngine:
         self._range_calculation()
 
         self._resolve_aoe()
+
+        for state in self.combatant_states.values():
+            state.start_of_combat_hp = state.current_hp
 
         self._evaluate_conditions("post_aoe")
 
@@ -440,18 +450,18 @@ class CombatEngine:
         )
         if has_hexblade_aoe:
             visible_def = min(
-                foe_state.unit.get_visible_stat("defense"),
-                foe_state.unit.get_visible_stat("res"),
+                foe_state.visible_stat("defense"),
+                foe_state.visible_stat("res"),
             )
         else:
             visible_def = (
-                foe_state.unit.get_visible_stat("defense")
+                foe_state.visible_stat("defense")
                 if state.unit.is_physical()
-                else foe_state.unit.get_visible_stat("res")
+                else foe_state.visible_stat("res")
             )
 
         coefficient = trigger.params.get("coefficient", 0.0)
-        visible_atk = state.unit.get_visible_stat("atk")
+        visible_atk = state.visible_stat("atk")
         damage = max(0, math.floor(coefficient * (visible_atk - visible_def)))
 
         for e in state.effects_AoE:
@@ -488,9 +498,6 @@ class CombatEngine:
  
     def _combat_stat_calculations(self):
         """Calculates combat stats incorporating STAT_BOOST and STAT_DAUNT effects."""
-        self.attacker.start_of_combat_hp = self.combatant_states["attacker"].current_hp
-        self.defender.start_of_combat_hp = self.combatant_states["defender"].current_hp
-
         atk_state = self.combatant_states["attacker"]
         def_state = self.combatant_states["defender"]
 
@@ -508,13 +515,13 @@ class CombatEngine:
         )
 
         atk_vals = {
-            stat: self.attacker.get_visible_stat(
+            stat: atk_state.visible_stat(
                 stat, ignore_buffs=atk_ignore_buffs, ignore_debuffs=atk_ignore_debuffs
             )
             for stat in ["hp", "atk", "spd", "defense", "res"]
         }
         def_vals = {
-            stat: self.defender.get_visible_stat(
+            stat: def_state.visible_stat(
                 stat, ignore_buffs=def_ignore_buffs, ignore_debuffs=def_ignore_debuffs
             )
             for stat in ["hp", "atk", "spd", "defense", "res"]
@@ -562,11 +569,6 @@ class CombatEngine:
                     s: getattr(state.phantom_bonus, s) + magnitude for s in stats
                 }
                 state.phantom_bonus = replace(state.phantom_bonus, **updates)
-
-        self.attacker.combat_stats = self.combatant_states["attacker"].combat_stats
-        self.defender.combat_stats = self.combatant_states["defender"].combat_stats
-        self.attacker.phantom_bonus = self.combatant_states["attacker"].phantom_bonus
-        self.defender.phantom_bonus = self.combatant_states["defender"].phantom_bonus
 
 # ── Strike sequence calculation ──────────────────────────────────────────────
 
@@ -1113,8 +1115,11 @@ class CombatEngine:
                         self._resolve_formula(effect.params, target_state, striker_state)
                         / 100.0
                     )
-                    perc_dr = 1.0 - ((1.0 - perc_dr) * (1.0 - dr_val))
-                    if not piercable:
+                    if piercable:
+                        dr_val *= pierce_mult
+                        perc_dr = 1.0 - ((1.0 - perc_dr) * (1.0 - dr_val))
+                    else:
+                        unpierceable_dr = 1.0 - ((1.0 - unpierceable_dr) * (1.0 - dr_val))
                         target_state.special_dr_count[id(effect)] = trigger_count + 1
 
         effective_dr = 1.0 - ((1.0 - perc_dr) * (1.0 - unpierceable_dr))
@@ -1480,20 +1485,14 @@ class CombatEngine:
                 case "spaces_moved":
                     variable = unit_state.spaces_moved
                 case "sum_visible_buffs":
-                    vb = unit_state.unit.visible_buffs
-                    variable = (
-                        max(0, vb.atk)
-                        + max(0, vb.spd)
-                        + max(0, vb.defense)
-                        + max(0, vb.res)
+                    vb = unit_state.unit.visible_buffs + unit_state.granted_visible_buffs
+                    variable = sum(
+                        max(0, getattr(vb, s)) for s in ("atk", "spd", "defense", "res")
                     )
                 case "sum_foe_visible_debuffs":
-                    vd = foe_state.unit.visible_debuffs
-                    variable = (
-                        max(0, vd.atk)
-                        + max(0, vd.spd)
-                        + max(0, vd.defense)
-                        + max(0, vd.res)
+                    vd = foe_state.unit.visible_debuffs + foe_state.granted_visible_debuffs
+                    variable = sum(
+                        max(0, getattr(vd, s)) for s in ("atk", "spd", "defense", "res")
                     )
                 case "mitigated_bucket":  # Reflex
                     variable = unit_state.damage_mitigated_bucket
@@ -1511,17 +1510,13 @@ class CombatEngine:
                 case "foe_penalty_count":
                     variable = foe_state.penalty_count
                 case "unit_cbt_atk":
-                    variable = cs.atk if cs else unit_state.unit.get_visible_stat("atk")
+                    variable = cs.atk if cs else unit_state.visible_stat("atk")
                 case "unit_cbt_spd":
-                    variable = cs.spd if cs else unit_state.unit.get_visible_stat("spd")
+                    variable = cs.spd if cs else unit_state.visible_stat("spd")
                 case "unit_cbt_def":
-                    variable = (
-                        cs.defense
-                        if cs
-                        else unit_state.unit.get_visible_stat("defense")
-                    )
+                    variable = cs.defense if cs else unit_state.visible_stat("defense")
                 case "unit_cbt_res":
-                    variable = cs.res if cs else unit_state.unit.get_visible_stat("res")
+                    variable = cs.res if cs else unit_state.visible_stat("res")
                 case "max_cooldown":
                     variable = unit_state.unit.max_cooldown
                 case "num_bonus_and_penalties_on_unit":
